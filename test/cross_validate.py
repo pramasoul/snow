@@ -6,15 +6,18 @@ Runs a ladder of increasingly complex physics scenarios and reports
 field correlation between the two implementations.
 
 Usage:
-    python test/cross_validate.py              # standard ladder
-    python test/cross_validate.py --soak       # run-until-stopped random fuzzing
-    python test/cross_validate.py --soak -n 5  # 5 fuzz iterations then stop
+    python test/cross_validate.py                        # standard ladder
+    python test/cross_validate.py --soak                 # run-until-stopped fuzzing
+    python test/cross_validate.py --soak -n 5            # 5 fuzz iterations
+    python test/cross_validate.py --soak --log results   # log to results.jsonl
 
 Requires: jax.  Uses snow.nlo_scipy as the reference solver by default.
 """
 import sys
+import json
 import argparse
 import time
+from datetime import datetime, timezone
 import numpy as np
 from scipy.constants import pi, c
 
@@ -27,6 +30,32 @@ fs = 1e-15
 ps = 1e-12
 pJ = 1e-12
 MHz = 1e6
+
+
+class JSONLLogger:
+    """Append-only JSONL logger."""
+
+    def __init__(self, path):
+        self.path = path
+        self.f = open(path, 'a')
+        # Write a session header
+        self.write_record({
+            'event': 'session_start',
+            'timestamp': self._now(),
+            'python': sys.version.split()[0],
+            'argv': sys.argv,
+        })
+
+    def _now(self):
+        return datetime.now(timezone.utc).isoformat()
+
+    def write_record(self, record):
+        record.setdefault('timestamp', self._now())
+        self.f.write(json.dumps(record, default=str) + '\n')
+        self.f.flush()
+
+    def close(self):
+        self.f.close()
 
 
 def import_solvers(ref_path=None):
@@ -86,8 +115,9 @@ def field_correlation(a, b):
                  np.sqrt(np.sum(np.abs(a)**2) * np.sum(np.abs(b)**2)))
 
 
-def compare(label, pump, args, nlo_ref, nlo_jax, threshold=0.999):
-    """Run both solvers, compare, print result."""
+def compare(label, pump, args, nlo_ref, nlo_jax, threshold=0.999,
+            logger=None, params=None):
+    """Run both solvers, compare, print result, optionally log."""
     t0 = time.perf_counter()
     a_ref, s_ref = nlo_ref.NEE(**args)
     t_ref = time.perf_counter() - t0
@@ -108,10 +138,32 @@ def compare(label, pump, args, nlo_ref, nlo_jax, threshold=0.999):
           f'steps={len(s_ref)}/{len(s_jax)} (ref/jax)  '
           f'time={t_ref:.2f}/{t_jax:.2f}s  '
           f'E_ratio={E_jax/E_in:.6f}')
+
+    if logger is not None:
+        record = {
+            'event': 'comparison',
+            'label': label,
+            'status': status,
+            'correlation': corr,
+            'steps_ref': len(s_ref),
+            'steps_jax': len(s_jax),
+            'time_ref_s': round(t_ref, 4),
+            'time_jax_s': round(t_jax, 4),
+            'speedup': round(t_ref / t_jax, 2) if t_jax > 0 else None,
+            'E_in': E_in,
+            'E_ref': E_ref,
+            'E_jax': E_jax,
+            'E_ratio_ref': E_ref / E_in,
+            'E_ratio_jax': E_jax / E_in,
+        }
+        if params is not None:
+            record['params'] = params
+        logger.write_record(record)
+
     return corr, status
 
 
-def run_ladder(nlo_ref, nlo_jax):
+def run_ladder(nlo_ref, nlo_jax, logger=None):
     """Standard validation ladder."""
     t, f_ref = make_grid()
     pp = 5.18 * um
@@ -119,41 +171,62 @@ def run_ladder(nlo_ref, nlo_jax):
 
     cases = [
         ('Linear, lossless, 1mm',
-         dict(L=1*mm, X0=0)),
+         dict(L=1*mm, X0=0),
+         dict(L_mm=1, X0=0, alpha_dBcm=0, poling='none')),
         ('Linear, lossless, 4mm',
-         dict(L=4*mm, X0=0)),
+         dict(L=4*mm, X0=0),
+         dict(L_mm=4, X0=0, alpha_dBcm=0, poling='none')),
         ('Linear, 0.5dB/cm loss, 4mm',
-         dict(L=4*mm, X0=0, alpha=util.absorption_coeff(0.5))),
+         dict(L=4*mm, X0=0, alpha=util.absorption_coeff(0.5)),
+         dict(L_mm=4, X0=0, alpha_dBcm=0.5, poling='none')),
         ('Weak NL, 1mm',
-         dict(L=1*mm, X0=1.1e-12)),
+         dict(L=1*mm, X0=1.1e-12),
+         dict(L_mm=1, X0=1.1e-12, alpha_dBcm=0, poling='uniform', pp_um=5.18)),
         ('Full SHG, 4mm',
-         dict(L=4*mm, X0=1.1e-12)),
+         dict(L=4*mm, X0=1.1e-12),
+         dict(L_mm=4, X0=1.1e-12, alpha_dBcm=0, poling='uniform', pp_um=5.18)),
         ('Chirped QPM, 4mm',
          dict(L=4*mm, X0=1.1e-12,
-              poling_fn=lambda z: np.sign(np.cos(z*2*pi/(pp + 0.5e-6*z))))),
+              poling_fn=lambda z: np.sign(np.cos(z*2*pi/(pp + 0.5e-6*z)))),
+         dict(L_mm=4, X0=1.1e-12, alpha_dBcm=0, poling='chirped',
+              pp_um=5.18, chirp_um_per_mm=0.5)),
         ('Apodized QPM, 4mm',
          dict(L=4*mm, X0=1.1e-12,
               poling_fn=lambda z: (np.exp(-((z-2*mm)/(1*mm))**2)
-                                   * np.sign(np.cos(z*2*pi/pp))))),
+                                   * np.sign(np.cos(z*2*pi/pp)))),
+         dict(L_mm=4, X0=1.1e-12, alpha_dBcm=0, poling='apodized', pp_um=5.18)),
         ('Uniform QPM, 10mm',
-         dict(L=10*mm, X0=1.1e-12)),
+         dict(L=10*mm, X0=1.1e-12),
+         dict(L_mm=10, X0=1.1e-12, alpha_dBcm=0, poling='uniform', pp_um=5.18)),
         ('SHG + 0.3dB/cm loss, 4mm',
-         dict(L=4*mm, X0=1.1e-12, alpha=util.absorption_coeff(0.3))),
+         dict(L=4*mm, X0=1.1e-12, alpha=util.absorption_coeff(0.3)),
+         dict(L_mm=4, X0=1.1e-12, alpha_dBcm=0.3, poling='uniform', pp_um=5.18)),
     ]
 
     print('=== Validation Ladder ===')
-    for label, kwargs in cases:
+    for label, kwargs, params in cases:
+        params['mode'] = 'ladder'
+        params['N'] = 1024
         pump, args = make_nee_args(t, f_ref, **kwargs)
-        corr, status = compare(label, pump, args, nlo_ref, nlo_jax)
+        corr, status = compare(label, pump, args, nlo_ref, nlo_jax,
+                               logger=logger, params=params)
         results.append((label, corr, status))
 
     n_pass = sum(1 for _, _, s in results if s == 'PASS')
     n_total = len(results)
     print(f'\n  {n_pass}/{n_total} passed')
+
+    if logger:
+        logger.write_record({
+            'event': 'ladder_summary',
+            'n_pass': n_pass,
+            'n_total': n_total,
+        })
+
     return all(s == 'PASS' for _, _, s in results)
 
 
-def run_soak(nlo_ref, nlo_jax, n_iterations=None):
+def run_soak(nlo_ref, nlo_jax, n_iterations=None, logger=None):
     """Run-until-stopped random parameter fuzzing.
 
     Randomly samples physically reasonable parameter combinations and
@@ -184,23 +257,24 @@ def run_soak(nlo_ref, nlo_jax, n_iterations=None):
             iteration += 1
 
             # Random parameters
-            log2N = rng.choice([9, 10, 11])
+            log2N = int(rng.choice([9, 10, 11]))
             N = 2**log2N
-            L = rng.uniform(0.5, 15) * mm
-            X0 = rng.uniform(0, 5e-12)
-            alpha_dBcm = rng.uniform(0, 1.0)
+            L = float(rng.uniform(0.5, 15)) * mm
+            X0 = float(rng.uniform(0, 5e-12))
+            alpha_dBcm = float(rng.uniform(0, 1.0))
             alpha = util.absorption_coeff(alpha_dBcm) if alpha_dBcm > 0.01 else 0
-            pp = rng.uniform(3, 8) * um
-            tau = rng.uniform(50, 300) * fs
-            Pavg = rng.uniform(0.1, 50) * 1e-6
+            pp = float(rng.uniform(3, 8)) * um
+            tau = float(rng.uniform(50, 300)) * fs
+            Pavg = float(rng.uniform(0.1, 50)) * 1e-6
             lam_p = 2 * um
 
             # Random poling type
-            poling_type = rng.choice(['uniform', 'chirped', 'apodized'])
+            poling_type = str(rng.choice(['uniform', 'chirped', 'apodized']))
+            chirp = 0.0
             if poling_type == 'uniform':
                 poling_fn = lambda z, _pp=pp: np.sign(np.cos(z*2*pi/_pp))
             elif poling_type == 'chirped':
-                chirp = rng.uniform(-1, 1) * 1e-6
+                chirp = float(rng.uniform(-1, 1)) * 1e-6
                 poling_fn = lambda z, _pp=pp, _c=chirp: np.sign(
                     np.cos(z*2*pi/(_pp + _c*z)))
             else:
@@ -213,13 +287,29 @@ def run_soak(nlo_ref, nlo_jax, n_iterations=None):
                      f'pp={pp/um:.1f}um tau={tau/fs:.0f}fs '
                      f'P={Pavg*1e6:.1f}uW {poling_type}')
 
+            params = {
+                'mode': 'soak',
+                'iteration': iteration,
+                'N': N,
+                'log2N': log2N,
+                'L_mm': L / mm,
+                'X0': X0,
+                'alpha_dBcm': alpha_dBcm,
+                'pp_um': pp / um,
+                'tau_fs': tau / fs,
+                'Pavg_uW': Pavg * 1e6,
+                'poling': poling_type,
+                'chirp_um_per_mm': chirp / 1e-6 if poling_type == 'chirped' else None,
+            }
+
             t, f_ref = make_grid(N=N)
             pump, args = make_nee_args(t, f_ref, L=L, X0=X0, alpha=alpha,
                                        pp=pp, poling_fn=poling_fn,
                                        Pavg=Pavg, tau=tau, lam_p=lam_p)
 
             corr, status = compare(label, pump, args, nlo_ref, nlo_jax,
-                                   threshold=0.99)
+                                   threshold=0.99,
+                                   logger=logger, params=params)
 
             if status == 'PASS':
                 n_pass += 1
@@ -233,9 +323,19 @@ def run_soak(nlo_ref, nlo_jax, n_iterations=None):
                 worst_label = label
 
             if iteration % 10 == 0 or status == 'FAIL':
-                print(f'\n  --- After {iteration} iterations: '
-                      f'{n_pass} pass, {n_warn} warn, {n_fail} fail, '
-                      f'worst={worst_corr:.6f} ---\n')
+                summary = (f'{n_pass} pass, {n_warn} warn, {n_fail} fail, '
+                           f'worst={worst_corr:.6f}')
+                print(f'\n  --- After {iteration} iterations: {summary} ---\n')
+                if logger:
+                    logger.write_record({
+                        'event': 'soak_progress',
+                        'iteration': iteration,
+                        'n_pass': n_pass,
+                        'n_warn': n_warn,
+                        'n_fail': n_fail,
+                        'worst_corr': worst_corr,
+                        'worst_label': worst_label,
+                    })
 
     except KeyboardInterrupt:
         print('\n  Stopped by user.')
@@ -244,6 +344,18 @@ def run_soak(nlo_ref, nlo_jax, n_iterations=None):
           f'{n_pass} pass, {n_warn} warn, {n_fail} fail')
     print(f'  Worst correlation: {worst_corr:.6f}')
     print(f'    {worst_label}')
+
+    if logger:
+        logger.write_record({
+            'event': 'soak_summary',
+            'iterations': iteration,
+            'n_pass': n_pass,
+            'n_warn': n_warn,
+            'n_fail': n_fail,
+            'worst_corr': worst_corr,
+            'worst_label': worst_label,
+        })
+
     return n_fail == 0
 
 
@@ -256,14 +368,26 @@ def main():
                         help='Run random parameter fuzzing instead of fixed ladder')
     parser.add_argument('-n', type=int, default=None,
                         help='Number of soak iterations (default: run until Ctrl-C)')
+    parser.add_argument('--log', metavar='FILE', default=None,
+                        help='Log results to FILE.jsonl (appends if exists)')
     args = parser.parse_args()
+
+    logger = None
+    if args.log:
+        logpath = args.log if args.log.endswith('.jsonl') else args.log + '.jsonl'
+        logger = JSONLLogger(logpath)
+        print(f'Logging to {logpath}')
 
     nlo_ref, nlo_jax = import_solvers(args.reference)
 
-    if args.soak:
-        ok = run_soak(nlo_ref, nlo_jax, n_iterations=args.n)
-    else:
-        ok = run_ladder(nlo_ref, nlo_jax)
+    try:
+        if args.soak:
+            ok = run_soak(nlo_ref, nlo_jax, n_iterations=args.n, logger=logger)
+        else:
+            ok = run_ladder(nlo_ref, nlo_jax, logger=logger)
+    finally:
+        if logger:
+            logger.close()
 
     sys.exit(0 if ok else 1)
 
