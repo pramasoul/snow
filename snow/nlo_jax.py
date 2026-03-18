@@ -91,10 +91,21 @@ def _build_poling_table(k, L, z0, NFFT, n_samples=None):
             jnp.asarray(g_table))
 
 
+def build_poling_table(k, L, z0, NFFT, n_samples=None):
+    """Pre-build a poling lookup table for use across multiple NEE() calls.
+
+    Use this when sweeping L or other parameters with the same waveguide
+    and grid.  Build once for the maximum L, then pass to each NEE() call.
+
+    Returns a tuple (k_shape, z_table, g_table) to pass as poling_table=.
+    """
+    return _build_poling_table(k, L, z0, NFFT, n_samples=n_samples)
+
+
 def NEE(t, x, Omega, f0,
         L, D, b0, b1_ref, k,
         z0=0, verbose=True, Kg=0, Qnoise=False,
-        gpu=None, poling_samples=None):
+        gpu=None, poling_samples=None, poling_table=None):
     """
     Nonlinear-envelope equation -- JAX JIT-compiled adaptive RK45 solver.
 
@@ -102,8 +113,12 @@ def NEE(t, x, Omega, f0,
     ----------
     poling_samples : int, optional
         Number of z-points for the poling lookup table.  If None, determined
-        automatically from the poling pattern.  Increase for very fine or
-        aperiodic structures.
+        automatically from the poling pattern.
+    poling_table : tuple, optional
+        Pre-built (k_shape, z_table, g_table) from build_poling_table().
+        When provided, the table is reused without rebuilding — critical
+        for parameter sweeps to ensure consistent poling sampling and
+        avoid recompilation.
 
     All other parameters match nlo.NEE for drop-in use.
     """
@@ -145,13 +160,17 @@ def NEE(t, x, Omega, f0,
     M = NFFT*Nup - NFFT
     center = NFFT // 2 + 1
 
-    # Build poling lookup table (all Python, before JIT boundary)
-    k_shape, z_table, g_table = _build_poling_table(
-        k, L, z0, NFFT, n_samples=poling_samples)
-
-    if verbose:
-        print(f'Poling table: {len(z_table)} samples over '
-              f'{float(L)*1e3:.2f} mm')
+    # Build or reuse poling lookup table
+    if poling_table is not None:
+        k_shape, z_table, g_table = poling_table
+        if verbose:
+            print(f'Poling table: {len(z_table)} samples (pre-built)')
+    else:
+        k_shape, z_table, g_table = _build_poling_table(
+            k, L, z0, NFFT, n_samples=poling_samples)
+        if verbose:
+            print(f'Poling table: {len(z_table)} samples over '
+                  f'{float(L)*1e3:.2f} mm')
 
     # Precompute table spacing for O(1) nearest-neighbor lookup
     z_start = float(z_table[0])

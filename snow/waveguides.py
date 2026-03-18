@@ -238,7 +238,7 @@ class waveguide:
     def propagate_NEE(self, pulse, v_ref=None,
                          verbose=True, zcheck_step = 0.5e-3,
                          z0 = 0, T=24.5, Kg=0, Qnoise=False,
-                         backend='scipy'):
+                         backend='scipy', poling_table=None):
         """Propagate a pulse through the waveguide using the NEE.
 
         Parameters
@@ -246,6 +246,10 @@ class waveguide:
         backend : str
             'scipy' (default) — original SciPy RK45 solver
             'jax' — JAX JIT-compiled GPU solver
+        poling_table : tuple, optional
+            Pre-built poling table from nlo_jax.build_poling_table().
+            For parameter sweeps with backend='jax', build once for
+            the maximum L and pass to each call.
         """
         #Timer
         tic_total = time.time()
@@ -290,7 +294,7 @@ class waveguide:
 
         if backend == 'jax':
             from . import nlo_jax
-            [a, a_evol] = nlo_jax.NEE(**nee_args)
+            [a, a_evol] = nlo_jax.NEE(**nee_args, poling_table=poling_table)
         else:  # 'scipy'
             [a, a_evol] = nlo.NEE(**nee_args)
         
