@@ -238,18 +238,14 @@ class waveguide:
     def propagate_NEE(self, pulse, v_ref=None,
                          verbose=True, zcheck_step = 0.5e-3,
                          z0 = 0, T=24.5, Kg=0, Qnoise=False,
-                         gpu=False, backend='scipy'):
+                         backend='scipy'):
         """Propagate a pulse through the waveguide using the NEE.
 
         Parameters
         ----------
         backend : str
             'scipy' (default) — original SciPy RK45 solver
-            'custom' — custom Dormand-Prince RK45 (supports gpu= flag)
             'jax' — JAX JIT-compiled GPU solver
-        gpu : bool
-            For backend='custom', run on GPU via CuPy.
-            Ignored for other backends.
         """
         #Timer
         tic_total = time.time()
@@ -295,11 +291,8 @@ class waveguide:
         if backend == 'jax':
             from . import nlo_jax
             [a, a_evol] = nlo_jax.NEE(**nee_args)
-        elif backend == 'custom':
-            [a, a_evol] = nlo.NEE(**nee_args, gpu=gpu)
         else:  # 'scipy'
-            from . import nlo_scipy
-            [a, a_evol] = nlo_scipy.NEE(**nee_args)
+            [a, a_evol] = nlo.NEE(**nee_args)
         
         tdelta = time.time() - tic_total
 
