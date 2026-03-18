@@ -85,20 +85,22 @@ JAX automatically enables float64 precision (`jax_enable_x64`).
 
 ### Memory
 
-JAX pre-allocates ~75% of GPU memory at startup as a memory pool.  On a 24 GB
-RTX 4090 this means ~18 GB of VRAM is claimed immediately, even though the
-actual computation uses only a few MB.  To change this behaviour:
+JAX normally pre-allocates ~75% of GPU memory at startup.  `snow.nlo_jax`
+overrides this default to **grow-on-demand** (`XLA_PYTHON_CLIENT_PREALLOCATE=false`)
+so that multiple Jupyter notebook kernels can share a single GPU without
+fighting over VRAM.  This has negligible performance impact since JAX still
+pools freed allocations.
 
-```bash
-# Only allocate what's needed (grow on demand)
-XLA_PYTHON_CLIENT_PREALLOCATE=false python ...
+To restore JAX's default pre-allocation (e.g. for dedicated benchmarking),
+set the environment variable before importing:
 
-# Or set a specific fraction (e.g. 10%)
-XLA_PYTHON_CLIENT_MEM_FRACTION=0.1 python ...
+```python
+import os
+os.environ['XLA_PYTHON_CLIENT_PREALLOCATE'] = 'true'
+# or: os.environ['XLA_PYTHON_CLIENT_MEM_FRACTION'] = '0.75'
+
+from snow import nlo_jax  # now pre-allocates
 ```
-
-Use `XLA_PYTHON_CLIENT_PREALLOCATE=false` on shared machines where other
-workloads need the GPU.
 
 ## Validation
 

@@ -14,8 +14,17 @@ The z-dependent nonlinear coupling k(z) is pre-sampled into a lookup table
 so that arbitrary poling patterns (uniform, chirped, apodized, aperiodic)
 are supported without Python callbacks inside the JIT boundary.
 """
+import os
 import numpy as np
 from scipy.constants import pi, h as h_planck
+
+# Default to grow-on-demand GPU memory allocation.  JAX normally pre-allocates
+# 75% of VRAM on first import, which is hostile in multi-kernel environments
+# (e.g. several Jupyter notebooks sharing one GPU).  Grow-on-demand has
+# negligible performance impact since JAX still pools freed allocations.
+# Users can override by setting the env var before importing snow.nlo_jax.
+if 'XLA_PYTHON_CLIENT_PREALLOCATE' not in os.environ:
+    os.environ['XLA_PYTHON_CLIENT_PREALLOCATE'] = 'false'
 
 import jax
 jax.config.update("jax_enable_x64", True)
