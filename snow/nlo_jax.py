@@ -52,10 +52,12 @@ def _build_poling_table(k, L, z0, NFFT, n_samples=None):
                 found = True
                 break
         if not found:
-            # Truly zero nonlinearity — return zero coupling
+            # Truly zero nonlinearity — use standard table size
+            # so compiled program shape matches nonlinear cases
+            _n = n_samples if n_samples is not None else 50000
             k_shape = np.zeros(NFFT, dtype=complex)
-            z_table = np.array([float(z0), float(L)])
-            g_table = np.zeros(2)
+            z_table = np.linspace(float(z0), float(L), _n)
+            g_table = np.zeros(_n)
             return (jnp.asarray(k_shape),
                     jnp.asarray(z_table),
                     jnp.asarray(g_table))
@@ -69,10 +71,16 @@ def _build_poling_table(k, L, z0, NFFT, n_samples=None):
         z_coarse = np.linspace(float(z0), float(L), 1000)
         g_coarse = np.array([k(z)[idx_max] / k_ref_val for z in z_coarse])
         sign_changes = np.sum(np.abs(np.diff(np.sign(g_coarse))) > 0)
-        # At least 200 samples per sign change, minimum 50000 total
-        # Dense sampling is critical: we use nearest-neighbor lookup,
-        # so each sample must accurately represent its neighborhood
-        n_samples = max(50000, sign_changes * 200)
+        # Scale to per-meter density so the table size is independent of L.
+        # This ensures sweeps over L don't change the table shape.
+        L_span = float(L) - float(z0)
+        if L_span > 0 and sign_changes > 0:
+            changes_per_m = sign_changes / L_span
+            n_samples = max(50000, int(changes_per_m * L_span * 200))
+        else:
+            n_samples = 50000
+        # Round to a fixed size to avoid shape changes on small L variations
+        n_samples = max(50000, ((n_samples + 9999) // 10000) * 10000)
 
     # Sample the scalar poling envelope
     z_table = np.linspace(float(z0), float(L), n_samples)
@@ -150,15 +158,19 @@ def NEE(t, x, Omega, f0,
     z_step = float(z_table[1] - z_table[0])
     n_table = len(z_table)
 
-    # JIT-compiled solver — all constants are captured as closure variables
+    # JIT-compiled solver.
+    # L_val and z0_val are passed as dynamic scalar arguments so that
+    # changing crystal length does NOT trigger recompilation.
+    # Array shapes (NFFT, Nup, poling table length) are baked into the
+    # compiled program — only shape changes cause recompilation.
     @jax.jit
-    def _solve(A0, k_shape, z_table, g_table):
+    def _solve(A0, k_shape, z_table, g_table, L_val, z0_val):
 
         def k_at_z(z):
             """Nearest-neighbor lookup of poling envelope at position z.
             O(1) — no search, just index arithmetic on uniform grid."""
-            idx = jnp.int32(jnp.round((z - z_start) / z_step))
-            idx = jnp.clip(idx, 0, n_table - 1)
+            idx = jnp.int32(jnp.round((z - z_table[0]) / (z_table[1] - z_table[0])))
+            idx = jnp.clip(idx, 0, z_table.shape[0] - 1)
             g = g_table[idx]
             return g * k_shape
 
@@ -212,32 +224,32 @@ def NEE(t, x, Omega, f0,
             return y_new, err_norm
 
         # Initial step size
-        f0_eval = fnl(z0, A0)
+        f0_eval = fnl(z0_val, A0)
         scale0 = atol + rtol * jnp.abs(A0)
         d0 = jnp.sqrt(jnp.mean(jnp.abs(A0 / scale0)**2))
         d1 = jnp.sqrt(jnp.mean(jnp.abs(f0_eval / scale0)**2))
         h0 = jnp.where((d0 < 1e-5) | (d1 < 1e-5), 1e-6, 0.01 * d0 / d1)
-        h0 = jnp.minimum(h0, L - z0)
+        h0 = jnp.minimum(h0, L_val - z0_val)
         y1 = A0 + h0 * f0_eval
-        f1_eval = fnl(z0 + h0, y1)
+        f1_eval = fnl(z0_val + h0, y1)
         d2 = jnp.sqrt(jnp.mean(
             jnp.abs((f1_eval - f0_eval) / scale0)**2)) / h0
         h1 = jnp.where(jnp.maximum(d1, d2) <= 1e-15,
                         jnp.maximum(1e-6, h0 * 1e-3),
                         (0.01 / jnp.maximum(d1, d2)) ** 0.2)
-        h_init = jnp.minimum(jnp.minimum(100 * h0, h1), L - z0)
+        h_init = jnp.minimum(jnp.minimum(100 * h0, h1), L_val - z0_val)
 
         # State: (z, y, h, n_steps)
-        init_state = (jnp.float64(z0), A0,
+        init_state = (z0_val, A0,
                       jnp.float64(h_init), jnp.int32(0))
 
         def cond_fn(state):
             z, _, _, _ = state
-            return z < L
+            return z < L_val
 
         def body_fn(state):
             z, y, h, n = state
-            h = jnp.minimum(h, L - z)
+            h = jnp.minimum(h, L_val - z)
 
             y_new, err_norm = rk45_step(z, y, h)
 
@@ -257,7 +269,7 @@ def NEE(t, x, Omega, f0,
             cond_fn, body_fn, init_state)
 
         # Final transform
-        A_out = y_final * jnp.exp(-1j * D_dev * L)
+        A_out = y_final * jnp.exp(-1j * D_dev * L_val)
         a_out = jnp.fft.ifft(A_out)
 
         return a_out, n_steps
@@ -266,7 +278,9 @@ def NEE(t, x, Omega, f0,
     if verbose:
         print('JAX compiling + running...')
 
-    a_out, n_steps = _solve(A0, k_shape, z_table, g_table)
+    L_val = jnp.float64(L)
+    z0_val = jnp.float64(z0)
+    a_out, n_steps = _solve(A0, k_shape, z_table, g_table, L_val, z0_val)
 
     # Block and move to CPU
     a_out = np.asarray(a_out)
