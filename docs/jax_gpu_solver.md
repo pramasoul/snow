@@ -83,6 +83,23 @@ pip install "jax[cuda12]"
 
 JAX automatically enables float64 precision (`jax_enable_x64`).
 
+### Memory
+
+JAX pre-allocates ~75% of GPU memory at startup as a memory pool.  On a 24 GB
+RTX 4090 this means ~18 GB of VRAM is claimed immediately, even though the
+actual computation uses only a few MB.  To change this behaviour:
+
+```bash
+# Only allocate what's needed (grow on demand)
+XLA_PYTHON_CLIENT_PREALLOCATE=false python ...
+
+# Or set a specific fraction (e.g. 10%)
+XLA_PYTHON_CLIENT_MEM_FRACTION=0.1 python ...
+```
+
+Use `XLA_PYTHON_CLIENT_PREALLOCATE=false` on shared machines where other
+workloads need the GPU.
+
 ## Validation
 
 The JAX solver is validated against the original SciPy-based CPU solver
