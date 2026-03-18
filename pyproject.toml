@@ -13,3 +13,6 @@ dependencies = [
     "matplotlib >= 3.10",
     "scipy >= 1.15"
     ]
+
+[tool.setuptools.packages.find]
+include = ["snow*"]
