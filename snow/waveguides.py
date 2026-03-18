@@ -239,6 +239,7 @@ class waveguide:
                          verbose=True, zcheck_step = 0.5e-3,
                          z0 = 0, T=24.5, Kg=0, Qnoise=False,
                          backend='scipy', poling_table=None,
+                         poling_fn_jax=None,
                          rtol=1e-4, atol=1e-4):
         """Propagate a pulse through the waveguide using the NEE.
 
@@ -296,6 +297,7 @@ class waveguide:
         if backend == 'jax':
             from . import nlo_jax
             [a, a_evol] = nlo_jax.NEE(**nee_args, poling_table=poling_table,
+                                      poling_fn_jax=poling_fn_jax,
                                       rtol=rtol, atol=atol)
         else:  # 'scipy'
             [a, a_evol] = nlo.NEE(**nee_args)
