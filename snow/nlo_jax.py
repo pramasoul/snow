@@ -105,7 +105,8 @@ def build_poling_table(k, L, z0, NFFT, n_samples=None):
 def NEE(t, x, Omega, f0,
         L, D, b0, b1_ref, k,
         z0=0, verbose=True, Kg=0, Qnoise=False,
-        gpu=None, poling_samples=None, poling_table=None):
+        gpu=None, poling_samples=None, poling_table=None,
+        rtol=1e-4, atol=1e-4):
     """
     Nonlinear-envelope equation -- JAX JIT-compiled adaptive RK45 solver.
 
@@ -119,6 +120,12 @@ def NEE(t, x, Omega, f0,
         When provided, the table is reused without rebuilding — critical
         for parameter sweeps to ensure consistent poling sampling and
         avoid recompilation.
+    rtol : float
+        Relative tolerance for the adaptive RK45 step controller (default 1e-4).
+        Tighter values (e.g. 1e-6) improve agreement with the CPU solver
+        at the cost of more steps.
+    atol : float
+        Absolute tolerance for the adaptive RK45 step controller (default 1e-4).
 
     All other parameters match nlo.NEE for drop-in use.
     """
@@ -183,7 +190,7 @@ def NEE(t, x, Omega, f0,
     # Array shapes (NFFT, Nup, poling table length) are baked into the
     # compiled program — only shape changes cause recompilation.
     @jax.jit
-    def _solve(A0, k_shape, z_table, g_table, L_val, z0_val):
+    def _solve(A0, k_shape, z_table, g_table, L_val, z0_val, rtol_val, atol_val):
 
         def k_at_z(z):
             """Nearest-neighbor lookup of poling envelope at position z.
@@ -217,9 +224,6 @@ def NEE(t, x, Omega, f0,
             return -1j * k_at_z(z) * F1 * jnp.exp(1j * D_dev * z)
 
         # --- Adaptive RK45 via lax.while_loop ---
-        rtol = 1e-4
-        atol = 1e-4
-
         def rk45_step(z, y, h):
             """One Dormand-Prince step. Returns (y_new, err_norm)."""
             k0 = fnl(z, y)
@@ -237,14 +241,14 @@ def NEE(t, x, Omega, f0,
 
             err = h * (71/57600*k0 - 71/16695*k2 + 71/1920*k3
                        - 17253/339200*k4 + 22/525*k5 - 1/40*k6)
-            scale = atol + rtol * jnp.maximum(jnp.abs(y), jnp.abs(y_new))
+            scale = atol_val + rtol_val * jnp.maximum(jnp.abs(y), jnp.abs(y_new))
             err_norm = jnp.sqrt(jnp.mean(jnp.abs(err / scale)**2))
 
             return y_new, err_norm
 
         # Initial step size
         f0_eval = fnl(z0_val, A0)
-        scale0 = atol + rtol * jnp.abs(A0)
+        scale0 = atol_val + rtol_val * jnp.abs(A0)
         d0 = jnp.sqrt(jnp.mean(jnp.abs(A0 / scale0)**2))
         d1 = jnp.sqrt(jnp.mean(jnp.abs(f0_eval / scale0)**2))
         h0 = jnp.where((d0 < 1e-5) | (d1 < 1e-5), 1e-6, 0.01 * d0 / d1)
@@ -299,7 +303,10 @@ def NEE(t, x, Omega, f0,
 
     L_val = jnp.float64(L)
     z0_val = jnp.float64(z0)
-    a_out, n_steps = _solve(A0, k_shape, z_table, g_table, L_val, z0_val)
+    rtol_val = jnp.float64(rtol)
+    atol_val = jnp.float64(atol)
+    a_out, n_steps = _solve(A0, k_shape, z_table, g_table,
+                            L_val, z0_val, rtol_val, atol_val)
 
     # Block and move to CPU
     a_out = np.asarray(a_out)
