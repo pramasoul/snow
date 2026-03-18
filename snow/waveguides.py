@@ -235,9 +235,10 @@ class waveguide:
     def nonlinear_coupling(self, z):
         return self.poling(z) * self.X0 / (4*self.N)
     
-    def propagate_NEE(self, pulse, v_ref=None, 
+    def propagate_NEE(self, pulse, v_ref=None,
                          verbose=True, zcheck_step = 0.5e-3,
-                         z0 = 0, T=24.5, Kg=0, Qnoise=False):
+                         z0 = 0, T=24.5, Kg=0, Qnoise=False,
+                         gpu=False):
         #Timer
         tic_total = time.time()
          
@@ -265,19 +266,20 @@ class waveguide:
                 p = 2/pi #first order QPM
             return p * self.X0 * omega_abs / (4 * self.N)
 
-        [a, a_evol] = nlo.NEE(t = pulse.t, 
+        [a, a_evol] = nlo.NEE(t = pulse.t,
                           x = pulse.a,
                           Omega = Omega,
                           f0 = pulse.f0,
                           L = self.L,
-                          D = D, 
-                          b0 = beta_ref, 
-                          b1_ref = beta_1_ref, 
+                          D = D,
+                          b0 = beta_ref,
+                          b1_ref = beta_1_ref,
                           k = k,
                           z0 = z0,
                           verbose = verbose,
                           Kg = Kg,
-                          Qnoise = Qnoise)
+                          Qnoise = Qnoise,
+                          gpu = gpu)
         
         tdelta = time.time() - tic_total
 
