@@ -1,0 +1,157 @@
+# JAX GPU-Accelerated NEE Solver
+
+## Overview
+
+`snow.nlo_jax` provides a GPU-accelerated version of the Nonlinear Envelope
+Equation (NEE) solver using [JAX](https://github.com/jax-ml/jax).  The entire
+Dormand-Prince RK45 integration loop — including FFTs, upsampling, the
+nonlinear product, and adaptive step control — is JIT-compiled into a single
+fused GPU program.  There is zero Python dispatch overhead in the hot loop.
+
+## Architecture
+
+```
+                     Python (setup)                    GPU (JIT-compiled)
+                ┌─────────────────────┐          ┌──────────────────────────┐
+  k(z) func ──>│  _build_poling_table │──> LUT ──│                          │
+                │  (pre-sample at     │          │  jax.lax.while_loop:     │
+  pulse,       │   many z-points)    │          │    fnl(z, y):            │
+  waveguide ──>│                     │          │      exp(-j*D*z)         │
+                │  Move arrays to    │──> A0 ──>│      FFT (upsample)     │
+                │  JAX device        │          │      nonlinear product   │
+                │                     │          │      FFT (downsample)    │
+                └─────────────────────┘          │      k_at_z(z) via LUT  │
+                                                 │    Dormand-Prince RK45  │
+                                                 │    adaptive step control│
+                                                 │                          │
+                                                 │  a_out = IFFT(y_final)  │
+                                                 └────────────┬─────────────┘
+                                                              │
+                                                     numpy array on CPU
+```
+
+### Key design decisions
+
+**Why JAX instead of CuPy?**  CuPy provides a NumPy-compatible GPU API, but
+each CuPy call dispatches a separate GPU kernel from Python.  The NEE solver
+evaluates `fnl()` seven times per RK45 step, each involving ~18 operations.
+At ~15 μs Python dispatch overhead per operation, the GPU sits idle waiting
+for Python most of the time (measured: 11% GPU utilization with CuPy).
+JAX's `jit` compiles the entire loop into a single GPU program, eliminating
+dispatch overhead entirely.
+
+**Poling lookup table.**  Arbitrary Python poling functions (QPM, chirped,
+apodized, aperiodic) cannot be called inside JIT-compiled code.  Instead,
+`_build_poling_table()` pre-samples the z-dependent coupling `k(z)` at high
+resolution before compilation.  Inside the JIT loop, `k_at_z(z)` performs
+O(1) nearest-neighbor lookup on the uniform grid — no interpolation
+smoothing, preserving the sharp ±1 transitions of square-wave poling.
+
+The sampling density is determined automatically from the poling pattern
+(at least 200 samples per sign change, minimum 50,000 total).  For very
+fine or aperiodic structures, pass `poling_samples=N` to override.
+
+**Separability.**  The coupling `k(z)` is factored as `g(z) * k_shape` where
+`k_shape` is the frequency-dependent part (computed once) and `g(z)` is the
+scalar poling envelope (looked up per step).  This is valid for all practical
+chi(2) waveguides where the nonlinear coefficient has a fixed spectral shape
+modulated by a z-dependent poling pattern.
+
+## Usage
+
+```python
+import snow.nlo_jax as nlo_jax
+
+# Same API as snow.nlo.NEE — drop-in replacement
+a_out, steps = nlo_jax.NEE(
+    t=pulse.t, x=pulse.a, Omega=Omega, f0=pulse.f0,
+    L=L, D=D, b0=beta_ref, b1_ref=beta_1_ref, k=k
+)
+
+# Or through the waveguide interface (requires adding gpu='jax' support
+# to waveguide.propagate_NEE — not yet wired up)
+```
+
+The first call for each array size incurs a ~3-6 second JIT compilation cost.
+Subsequent calls with the same `N` reuse the cached compiled program.
+
+### Requirements
+
+```
+pip install "jax[cuda12]"
+```
+
+JAX automatically enables float64 precision (`jax_enable_x64`).
+
+## Validation
+
+The JAX solver is validated against the original SciPy-based CPU solver
+(`scipy.integrate.RK45`) using a ladder of increasingly complex physics:
+
+| # | Test                         | Field Correlation |
+|---|------------------------------|-------------------|
+| 1 | Linear, lossless, 1mm        | 1.000000          |
+| 2 | Linear, lossless, 4mm        | 1.000000          |
+| 3 | Linear, 0.5 dB/cm loss, 4mm  | 1.000000          |
+| 4 | Weak nonlinear, 1mm          | 0.999876          |
+| 5 | Full SHG, 4mm                | 0.999947          |
+| 6 | Chirped QPM, 4mm             | 0.999592          |
+| 7 | Apodized QPM, 4mm            | 0.999915          |
+| 8 | Uniform QPM, 10mm            | 0.999279          |
+| 9 | SHG + 0.3 dB/cm loss, 4mm   | 0.999950          |
+
+"Field correlation" is the normalized overlap
+`|<a_ref|a_jax>| / sqrt(<a_ref|a_ref> <a_jax|a_jax>)`.
+All cases exceed 0.999.
+
+### Running validation
+
+**Fixed ladder** (the table above):
+```bash
+python test/cross_validate.py --reference /path/to/nlo_original.py
+```
+
+**Random fuzz testing** (run until Ctrl-C):
+```bash
+python test/cross_validate.py --soak --reference /path/to/nlo_original.py
+```
+
+This randomly samples from physically reasonable parameter ranges:
+- Grid size N: 2^9 to 2^11
+- Crystal length: 0.5 - 15 mm
+- Nonlinear coefficient X0: 0 - 5e-12 m/V
+- Loss: 0 - 1 dB/cm
+- Poling period: 3 - 8 μm
+- Pulse width: 50 - 300 fs
+- Average power: 0.1 - 50 μW
+- Poling type: uniform, chirped, or apodized (random)
+
+Each iteration runs both solvers and reports the field correlation.
+
+**Bounded fuzz** (e.g. 100 iterations):
+```bash
+python test/cross_validate.py --soak -n 100 --reference /path/to/nlo_original.py
+```
+
+### Known limitations
+
+At high pump powers (>~50 μW average, corresponding to significant pump
+depletion), the two adaptive solvers can diverge because the problem becomes
+sensitive to the exact step sequence.  Both solvers remain individually valid
+(conserve energy, produce physical spectra), but their field correlation
+drops below 0.99.  This is inherent to adaptive ODE solvers on sensitive
+problems, not a bug in either implementation.
+
+## Performance
+
+Benchmarked on RTX 4090 vs dual Xeon E5-2699 v3 (64 cores, OpenBLAS):
+
+| N     | L    | JAX GPU | CPU (SciPy) | Speedup |
+|-------|------|---------|-------------|---------|
+| 1024  | 4mm  | 6.75s   | 57.6s       | 8.5x    |
+| 4096  | 4mm  | 3.91s   | 242.2s      | 62x     |
+| 16384 | 4mm  | 3.95s   | 949.0s      | 240x    |
+
+JAX execution time is nearly independent of N (the GPU absorbs larger FFTs
+without significant slowdown), while the CPU solver scales poorly.
+Compilation adds ~3-6 seconds on first call per array shape.
