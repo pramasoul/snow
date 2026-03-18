@@ -10,8 +10,7 @@ Usage:
     python test/cross_validate.py --soak       # run-until-stopped random fuzzing
     python test/cross_validate.py --soak -n 5  # 5 fuzz iterations then stop
 
-Requires: jax, the original nlo.py saved as /tmp/nlo_original.py or
-passed via --reference.
+Requires: jax.  Uses snow.nlo_scipy as the reference solver by default.
 """
 import sys
 import argparse
@@ -30,13 +29,15 @@ pJ = 1e-12
 MHz = 1e6
 
 
-def import_solvers(ref_path):
+def import_solvers(ref_path=None):
     """Import the reference (CPU) and JAX solvers."""
-    # Reference solver
-    import importlib.util
-    spec = importlib.util.spec_from_file_location("nlo_ref", ref_path)
-    nlo_ref = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(nlo_ref)
+    if ref_path is not None:
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("nlo_ref", ref_path)
+        nlo_ref = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(nlo_ref)
+    else:
+        from snow import nlo_scipy as nlo_ref
 
     import snow.nlo_jax as nlo_jax
 
@@ -249,8 +250,8 @@ def run_soak(nlo_ref, nlo_jax, n_iterations=None):
 def main():
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument('--reference', default='/tmp/nlo_original.py',
-                        help='Path to reference NEE solver (default: /tmp/nlo_original.py)')
+    parser.add_argument('--reference', default=None,
+                        help='Path to reference NEE solver (default: snow.nlo_scipy)')
     parser.add_argument('--soak', action='store_true',
                         help='Run random parameter fuzzing instead of fixed ladder')
     parser.add_argument('-n', type=int, default=None,

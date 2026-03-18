@@ -238,27 +238,39 @@ class waveguide:
     def propagate_NEE(self, pulse, v_ref=None,
                          verbose=True, zcheck_step = 0.5e-3,
                          z0 = 0, T=24.5, Kg=0, Qnoise=False,
-                         gpu=False):
+                         gpu=False, backend='scipy'):
+        """Propagate a pulse through the waveguide using the NEE.
+
+        Parameters
+        ----------
+        backend : str
+            'scipy' (default) — original SciPy RK45 solver
+            'custom' — custom Dormand-Prince RK45 (supports gpu= flag)
+            'jax' — JAX JIT-compiled GPU solver
+        gpu : bool
+            For backend='custom', run on GPU via CuPy.
+            Ignored for other backends.
+        """
         #Timer
         tic_total = time.time()
-         
+
         #Get pulse info
         f0 = pulse.f0
         Omega  = pulse.Omega
-        
+
         beta = self.beta( pulse.wl, T=T)
 
         if v_ref == None:
             vg = 1/self.beta1( pulse.wl )
             v_ref = vg[0]
-        
+
         beta_ref = beta[0]
         beta_1_ref = 1/v_ref
         D = beta - beta_ref - Omega/v_ref - 1j*self.alpha/2
 
         omega_ref = 2*pi*f0
         omega_abs = omega_ref + Omega
-        
+
         def k(z): #nonlinear coupling
             if Kg == 0:
                 p = self.poling(z)
@@ -266,20 +278,28 @@ class waveguide:
                 p = 2/pi #first order QPM
             return p * self.X0 * omega_abs / (4 * self.N)
 
-        [a, a_evol] = nlo.NEE(t = pulse.t,
-                          x = pulse.a,
-                          Omega = Omega,
-                          f0 = pulse.f0,
-                          L = self.L,
-                          D = D,
-                          b0 = beta_ref,
-                          b1_ref = beta_1_ref,
-                          k = k,
-                          z0 = z0,
-                          verbose = verbose,
-                          Kg = Kg,
-                          Qnoise = Qnoise,
-                          gpu = gpu)
+        nee_args = dict(t = pulse.t,
+                        x = pulse.a,
+                        Omega = Omega,
+                        f0 = pulse.f0,
+                        L = self.L,
+                        D = D,
+                        b0 = beta_ref,
+                        b1_ref = beta_1_ref,
+                        k = k,
+                        z0 = z0,
+                        verbose = verbose,
+                        Kg = Kg,
+                        Qnoise = Qnoise)
+
+        if backend == 'jax':
+            from . import nlo_jax
+            [a, a_evol] = nlo_jax.NEE(**nee_args)
+        elif backend == 'custom':
+            [a, a_evol] = nlo.NEE(**nee_args, gpu=gpu)
+        else:  # 'scipy'
+            from . import nlo_scipy
+            [a, a_evol] = nlo_scipy.NEE(**nee_args)
         
         tdelta = time.time() - tic_total
 
