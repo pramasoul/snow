@@ -59,7 +59,8 @@ def refractive_index(material, wl, T=24.5):
     elif 0.1<wl_test<20:
         pass #Units were microns, do nothing
     else:
-        print('Warning = Wavelength value seems out of range!')
+        import warnings
+        warnings.warn(f'Wavelength value {wl_test} seems out of range')
             
     
     A = 0
