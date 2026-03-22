@@ -81,9 +81,27 @@ For best accuracy, pass the poling function as a JAX-compatible callable
 using `jnp` operations.  This is evaluated directly inside the JIT loop,
 giving bit-exact results matching the CPU solver for standard poling patterns.
 
+```python
+import jax.numpy as jnp
+
+# Uniform QPM
+poling_jax = lambda z: jnp.sign(jnp.cos(z * 2*jnp.pi / pp))
+
+# Chirped QPM (period varies linearly with z)
+chirp_rate = 0.5e-6  # period change per meter
+poling_jax = lambda z: jnp.sign(jnp.cos(z * 2*jnp.pi / (pp + chirp_rate * z)))
+
+# Apodized QPM (Gaussian-enveloped)
+L = 4e-3
+poling_jax = lambda z: (jnp.exp(-((z - L/2) / (L/4))**2)
+                        * jnp.sign(jnp.cos(z * 2*jnp.pi / pp)))
+```
+
 Without `poling_fn_jax`, the solver falls back to a pre-sampled lookup table
 (nearest-neighbor interpolation), which can introduce small discretization
-errors that accumulate over long crystals.
+errors that accumulate over long crystals.  The lookup table is still useful
+for arbitrary poling patterns that can't be expressed in `jnp` ops (e.g.,
+patterns loaded from a file).
 
 ### Pre-built poling table (for parameter sweeps)
 
