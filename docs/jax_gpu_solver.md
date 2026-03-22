@@ -13,18 +13,18 @@ fused GPU program.  There is zero Python dispatch overhead in the hot loop.
 ```
                      Python (setup)                    GPU (JIT-compiled)
                 ┌─────────────────────┐          ┌──────────────────────────┐
-  k(z) func ──>│  _build_poling_table │──> LUT ──│                          │
+   k(z) func ──>│ _build_poling_table │──> LUT ──│                          │
                 │  (pre-sample at     │          │  jax.lax.while_loop:     │
-  pulse,       │   many z-points)    │          │    fnl(z, y):            │
-  waveguide ──>│                     │          │      exp(-j*D*z)         │
-                │  Move arrays to    │──> A0 ──>│      FFT (upsample)     │
-                │  JAX device        │          │      nonlinear product   │
+   pulse,       │   many z-points)    │          │    fnl(z, y):            │
+   waveguide ──>│                     │          │      exp(-j*D*z)         │
+                │   Move arrays to    │──> A0 ──>│      FFT (upsample)      │
+                │   JAX device        │          │      nonlinear product   │
                 │                     │          │      FFT (downsample)    │
-                └─────────────────────┘          │      k_at_z(z) via LUT  │
-                                                 │    Dormand-Prince RK45  │
-                                                 │    adaptive step control│
+                └─────────────────────┘          │      k_at_z(z) via LUT   │
+                                                 │    Dormand-Prince RK45   │
+                                                 │    adaptive step control │
                                                  │                          │
-                                                 │  a_out = IFFT(y_final)  │
+                                                 │  a_out = IFFT(y_final)   │
                                                  └────────────┬─────────────┘
                                                               │
                                                      numpy array on CPU
@@ -117,7 +117,7 @@ The JAX solver is validated against the original SciPy-based CPU solver
 | 6 | Chirped QPM, 4mm             | 0.999592          |
 | 7 | Apodized QPM, 4mm            | 0.999915          |
 | 8 | Uniform QPM, 10mm            | 0.999279          |
-| 9 | SHG + 0.3 dB/cm loss, 4mm   | 0.999950          |
+| 9 | SHG + 0.3 dB/cm loss, 4mm    | 0.999950          |
 
 "Field correlation" is the normalized overlap
 `|<a_ref|a_jax>| / sqrt(<a_ref|a_ref> <a_jax|a_jax>)`.
