@@ -103,16 +103,30 @@ errors that accumulate over long crystals.  The lookup table is still useful
 for arbitrary poling patterns that can't be expressed in `jnp` ops (e.g.,
 patterns loaded from a file).
 
-### Pre-built poling table (for parameter sweeps)
+### Poling lookup table (for non-analytical patterns)
 
-When sweeping crystal length L with lookup-table mode, pre-build the table
-once for the maximum L to avoid recompilation:
+If your poling pattern can't be expressed as a `jnp` formula — for example,
+a domain structure loaded from a lithography mask file or an experimentally
+measured pattern — use the lookup table instead:
+
+```python
+ptable = nlo_jax.build_poling_table(k_func, L, 0, N)
+out, _ = wg.propagate_NEE(pulse, backend='jax', poling_table=ptable)
+```
+
+When sweeping L with a lookup table, pre-build once for the maximum L
+to keep the table shape constant (avoids recompilation):
 
 ```python
 ptable = nlo_jax.build_poling_table(k_func, L_max, 0, N)
 for L in L_values:
     out, _ = wg.propagate_NEE(pulse, backend='jax', poling_table=ptable)
 ```
+
+The lookup table uses nearest-neighbor interpolation on a uniform grid.
+For sharp poling transitions (e.g., square-wave QPM), this can introduce
+small phase errors that accumulate over long crystals.  Prefer
+`poling_fn_jax` whenever the pattern has an analytical form.
 
 ### Tolerances
 
