@@ -60,16 +60,49 @@ modulated by a z-dependent poling pattern.
 ## Usage
 
 ```python
-import snow.nlo_jax as nlo_jax
+# Through the waveguide interface (recommended)
+import jax.numpy as jnp
+poling_jax = lambda z: jnp.sign(jnp.cos(z * 2*jnp.pi / pp))
+out, steps = wg.propagate_NEE(pulse, v_ref=v_ref, backend='jax',
+                              poling_fn_jax=poling_jax)
 
-# Same API as snow.nlo.NEE — drop-in replacement
+# Or call NEE directly for bulk crystal simulations
+import snow.nlo_jax as nlo_jax
 a_out, steps = nlo_jax.NEE(
     t=pulse.t, x=pulse.a, Omega=Omega, f0=pulse.f0,
-    L=L, D=D, b0=beta_ref, b1_ref=beta_1_ref, k=k
+    L=L, D=D, b0=beta_ref, b1_ref=beta_1_ref, k=k,
+    poling_fn_jax=poling_jax
 )
+```
 
-# Or through the waveguide interface (requires adding gpu='jax' support
-# to waveguide.propagate_NEE — not yet wired up)
+### JAX-native poling (recommended)
+
+For best accuracy, pass the poling function as a JAX-compatible callable
+using `jnp` operations.  This is evaluated directly inside the JIT loop,
+giving bit-exact results matching the CPU solver for standard poling patterns.
+
+Without `poling_fn_jax`, the solver falls back to a pre-sampled lookup table
+(nearest-neighbor interpolation), which can introduce small discretization
+errors that accumulate over long crystals.
+
+### Pre-built poling table (for parameter sweeps)
+
+When sweeping crystal length L with lookup-table mode, pre-build the table
+once for the maximum L to avoid recompilation:
+
+```python
+ptable = nlo_jax.build_poling_table(k_func, L_max, 0, N)
+for L in L_values:
+    out, _ = wg.propagate_NEE(pulse, backend='jax', poling_table=ptable)
+```
+
+### Tolerances
+
+`rtol` and `atol` are exposed as dynamic arguments (changing them does not
+trigger recompilation):
+
+```python
+wg.propagate_NEE(pulse, backend='jax', rtol=1e-6, atol=1e-6)
 ```
 
 The first call for each array size incurs a ~3-6 second JIT compilation cost.
