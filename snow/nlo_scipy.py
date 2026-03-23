@@ -12,7 +12,7 @@ from scipy.integrate import RK45
 def NEE(t, x, Omega, f0,
         L, D, b0, b1_ref, k,
         z0=0, verbose=True, Kg=0, Qnoise=False,
-        z_save=None):
+        z_save=None, gamma_eff=0):
     """
     Nonlinear-envelope equation
     Adaptive solver
@@ -24,6 +24,10 @@ def NEE(t, x, Omega, f0,
         When provided, the returned ``a_evol`` is a 2-D array of shape
         ``(len(z_save), NFFT)`` containing the field snapshots instead
         of the step-size array.
+    gamma_eff : float
+        Effective Kerr nonlinearity parameter (1/W/m).  Adds an
+        instantaneous SPM term i·γ·|A|²·A to the NEE.  Default 0
+        (no Kerr effect).
     """
     #Get stuff
     NFFT = t.size
@@ -77,18 +81,32 @@ def NEE(t, x, Omega, f0,
         Aup[center+M:] = y[center:]
         aup = ifft(Aup) * Nup
 
-        #Nonlinear stuff
+        #Chi(2) nonlinear product
         xup = aup*(np.cos(phi) + 1j*np.sin(phi))
         f1up = aup*(xup + 2*np.conj(xup))
 
-        #Downsample
+        #Downsample chi(2)
         F1 = np.zeros_like(y)
         F1up = fft(f1up)
         F1[:center] = F1up[:center]
         F1[center:] = F1up[center+M:]
         F1 = F1 / Nup
 
-        return -1j * k(z) * F1 * np.exp(1j*D*z)
+        result = -1j * k(z) * F1
+
+        #Kerr (chi(3)) SPM term: -i * gamma * |A|^2 * A
+        #(sign matches SNOW's exp(-iDz) dispersion convention so that
+        # positive gamma_eff = self-focusing, as in the standard NLSE)
+        if gamma_eff != 0:
+            kerr_up = -1j * gamma_eff * np.abs(aup)**2 * aup
+            FK = np.zeros_like(y)
+            FKup = fft(kerr_up)
+            FK[:center] = FKup[:center]
+            FK[center:] = FKup[center+M:]
+            FK = FK / Nup
+            result = result + FK
+
+        return result * np.exp(1j*D*z)
     
     rtol = 1e-4
     atol = 1e-4

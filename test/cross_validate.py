@@ -83,7 +83,8 @@ def make_grid(N=2**10, lam_start=800*nm, lam_stop=3*um):
 
 
 def make_nee_args(t, f_ref, L, X0, alpha=0, pp=5.18*um,
-                  poling_fn=None, Pavg=1e-6, tau=100*fs, lam_p=2*um):
+                  poling_fn=None, Pavg=1e-6, tau=100*fs, lam_p=2*um,
+                  gamma_eff=0):
     """Build the dict of arguments for NEE()."""
     pump = pulses.sech_pulse(t, tau, f_ref=f_ref, Pavg=Pavg,
                              f0=c/lam_p, Npwr_dB=200, frep=250*MHz)
@@ -105,7 +106,8 @@ def make_nee_args(t, f_ref, L, X0, alpha=0, pp=5.18*um,
         return wg.poling(z) * X0 * omega_abs / (4 * 1)
 
     args = dict(t=pump.t, x=pump.a, Omega=Omega, f0=pump.f0,
-                L=L, D=D, b0=beta[0], b1_ref=1/v_ref, k=k, verbose=False)
+                L=L, D=D, b0=beta[0], b1_ref=1/v_ref, k=k, verbose=False,
+                gamma_eff=gamma_eff)
     return pump, args
 
 
@@ -201,6 +203,15 @@ def run_ladder(nlo_ref, nlo_jax, logger=None):
         ('SHG + 0.3dB/cm loss, 4mm',
          dict(L=4*mm, X0=1.1e-12, alpha=util.absorption_coeff(0.3)),
          dict(L_mm=4, X0=1.1e-12, alpha_dBcm=0.3, poling='uniform', pp_um=5.18)),
+        ('Kerr only, 4mm',
+         dict(L=4*mm, X0=0, gamma_eff=0.3),
+         dict(L_mm=4, X0=0, gamma=0.3, poling='none')),
+        ('Kerr + SHG, 4mm',
+         dict(L=4*mm, X0=1.1e-12, gamma_eff=0.3),
+         dict(L_mm=4, X0=1.1e-12, gamma=0.3, poling='uniform', pp_um=5.18)),
+        ('Kerr only, 10mm',
+         dict(L=10*mm, X0=0, gamma_eff=0.3, Pavg=5e-6),
+         dict(L_mm=10, X0=0, gamma=0.3, poling='none')),
     ]
 
     print('=== Validation Ladder ===')

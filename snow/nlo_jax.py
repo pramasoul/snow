@@ -143,7 +143,7 @@ def NEE(t, x, Omega, f0,
         gpu=None, poling_samples=None, poling_table=None,
         poling_fn_jax=None,
         rtol=1e-4, atol=1e-4,
-        z_save=None):
+        z_save=None, gamma_eff=0):
     """
     Nonlinear-envelope equation -- JAX JIT-compiled adaptive RK45 solver.
 
@@ -172,6 +172,10 @@ def NEE(t, x, Omega, f0,
         ``(len(z_save), NFFT)`` containing the field snapshots instead
         of the step-size array.  Steps are clamped to land exactly on
         ``z_save`` positions for accuracy.
+    gamma_eff : float
+        Effective Kerr nonlinearity parameter (1/W/m).  Adds an
+        instantaneous SPM term i·γ·|A|²·A to the NEE.  Default 0
+        (no Kerr effect).
 
     All other parameters match nlo.NEE for drop-in use.
     """
@@ -271,6 +275,7 @@ def NEE(t, x, Omega, f0,
             Aup = Aup.at[center+M:].set(y_fast[center:])
             aup = jnp.fft.ifft(Aup) * Nup
 
+            # Chi(2) nonlinear product
             xup = aup * (jnp.cos(phi) + 1j * jnp.sin(phi))
             f1up = aup * (xup + 2 * jnp.conj(xup))
 
@@ -280,7 +285,20 @@ def NEE(t, x, Omega, f0,
             F1 = F1.at[center:].set(F1up[center+M:])
             F1 = F1 / Nup
 
-            return -1j * k_at_z(z) * F1 * jnp.exp(1j * D_dev * z)
+            result = -1j * k_at_z(z) * F1
+
+            if gamma_eff != 0:
+                # Kerr (chi(3)) SPM term: -i * gamma * |A|^2 * A
+                # (sign matches SNOW's exp(-iDz) dispersion convention)
+                kerr_up = -1j * gamma_eff * jnp.abs(aup)**2 * aup
+                FKup = jnp.fft.fft(kerr_up)
+                FK = jnp.zeros_like(y)
+                FK = FK.at[:center].set(FKup[:center])
+                FK = FK.at[center:].set(FKup[center+M:])
+                FK = FK / Nup
+                result = result + FK
+
+            return result * jnp.exp(1j * D_dev * z)
 
         def rk_step(z, y, f0_val, h):
             """One Dormand-Prince step with FSAL.

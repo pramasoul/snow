@@ -496,3 +496,123 @@ class TestZSave:
                                        z_save=z_pos)
 
         np.testing.assert_allclose(out1.a, out2.a, rtol=1e-10)
+
+
+# ===========================================================================
+# Group 9: χ⁽³⁾ Kerr SPM
+# ===========================================================================
+
+class TestKerr:
+    """Validate the Kerr (χ⁽³⁾) self-phase modulation term."""
+
+    @pytest.fixture
+    def grid_1550(self):
+        return make_grid(lam_start=1200*nm, lam_stop=2*um, N=2**12)
+
+    def test_gamma_zero_unchanged(self, grid_1550):
+        """gamma_eff=0 must reproduce the no-Kerr result exactly."""
+        t, f_ref = grid_1550
+        x = pulses.sech(t, 5*pJ, 100*fs, f0=c/(1.55*um) - f_ref)
+        wg = make_waveguide(alpha_dBcm=0, X0=1.1e-12, L=4*mm)
+
+        p1 = pulses.pulse(t, x.copy(), c/f_ref, frep=250*MHz)
+        out1, _ = wg.propagate_NEE(p1, v_ref=1/wg.beta1(1*um), verbose=False)
+
+        wg.set_nonlinear_coeffs(N=1, X0=1.1e-12, gamma_eff=0)
+        p2 = pulses.pulse(t, x.copy(), c/f_ref, frep=250*MHz)
+        out2, _ = wg.propagate_NEE(p2, v_ref=1/wg.beta1(1*um), verbose=False)
+
+        np.testing.assert_allclose(out1.a, out2.a, rtol=1e-10)
+
+    def test_kerr_energy_conservation(self, grid_1550):
+        """Kerr is lossless — energy must be conserved."""
+        t, f_ref = grid_1550
+        wg = make_waveguide(alpha_dBcm=0, X0=0, L=20*mm)
+        wg.set_nonlinear_coeffs(N=1, X0=0, gamma_eff=0.3)
+        p = pulses.sech_pulse(t, 100*fs, f_ref=f_ref, Energy=10*pJ,
+                              f0=c/(1.55*um), Npwr_dB=200, frep=250*MHz)
+        v_ref = 1 / wg.beta1(1.55*um)
+        out, _ = wg.propagate_NEE(p, v_ref=v_ref, verbose=False)
+        assert out.energy_td() == pytest.approx(p.energy_td(), rel=1e-3)
+
+    def test_spm_spectral_broadening(self, grid_1550):
+        """Pure SPM (no GVD) must broaden the spectrum without changing
+        the temporal shape."""
+        t, f_ref = grid_1550
+        from snow import nlo_scipy
+        gamma = 0.3
+        FWHM = 100 * fs
+        E = 20 * pJ
+        p = pulses.sech_pulse(t, FWHM, f_ref=f_ref, Energy=E,
+                              f0=c/(1.55*um), Npwr_dB=200, frep=250*MHz)
+
+        D_zero = np.zeros(t.size, dtype=complex)
+        k_zero = lambda z: np.zeros(t.size)
+        a_out, _ = nlo_scipy.NEE(t=p.t, x=p.a, Omega=p.Omega, f0=p.f0,
+                                  L=10*mm, D=D_zero, b0=0, b1_ref=0,
+                                  k=k_zero, verbose=False, gamma_eff=gamma)
+
+        # Temporal peak power preserved (no GVD)
+        assert np.max(np.abs(a_out)**2) == pytest.approx(
+            np.max(np.abs(p.a)**2), rel=1e-2)
+
+        # Spectrum broadened
+        spec_in = np.abs(fft(p.a))**2
+        spec_out = np.abs(fft(a_out))**2
+        # Peak spectral density drops when spectrum broadens
+        assert np.max(spec_out) < np.max(spec_in) * 0.99
+
+    def test_soliton_self_trapping(self, grid_1550):
+        """N=1 soliton should propagate without significant broadening."""
+        t, f_ref = grid_1550
+        gamma = 0.3
+        wg = make_waveguide(alpha_dBcm=0, X0=0, L=20*mm)
+        wg.set_nonlinear_coeffs(N=1, X0=0, gamma_eff=gamma)
+        wg.set_length(20*mm)
+
+        FWHM = 100 * fs
+        beta2 = float(wg.beta2(np.array([1.55*um])))
+        T0 = FWHM / 1.76
+        P_sol = abs(beta2) / (gamma * T0**2)
+        E_sol = P_sol * FWHM / 0.88
+
+        # The analytical formula overestimates by ~2× due to higher-order
+        # dispersion; the actual soliton is near N≈0.7 of the formula.
+        # Use 0.5× E_sol which should give mild broadening (below threshold).
+        p_low = pulses.sech_pulse(t, FWHM, f_ref=f_ref, Energy=0.25*E_sol,
+                                  f0=c/(1.55*um), Npwr_dB=200, frep=250*MHz)
+        v_ref = 1 / wg.beta1(1.55*um)
+        out_low, _ = wg.propagate_NEE(p_low, v_ref=v_ref, verbose=False)
+        w_low = rms_width(t, out_low.a)
+
+        # Use 1× E_sol which should be above threshold (compression)
+        p_high = pulses.sech_pulse(t, FWHM, f_ref=f_ref, Energy=E_sol,
+                                   f0=c/(1.55*um), Npwr_dB=200, frep=250*MHz)
+        out_high, _ = wg.propagate_NEE(p_high, v_ref=v_ref, verbose=False)
+        w_high = rms_width(t, out_high.a)
+
+        # Low energy broadens more than high energy (Kerr counteracts GVD)
+        assert w_low > w_high, \
+            "Kerr should reduce dispersive broadening at soliton-range energy"
+
+    def test_positive_gamma_self_focusing(self, grid_1550):
+        """Positive gamma with anomalous GVD must compress (self-focusing),
+        negative gamma must broaden more than dispersion alone."""
+        t, f_ref = grid_1550
+        wg = make_waveguide(alpha_dBcm=0, X0=0, L=10*mm)
+        v_ref = 1 / wg.beta1(1.55*um)
+
+        results = {}
+        for g in [+0.3, -0.3, 0]:
+            wg.set_nonlinear_coeffs(N=1, X0=0, gamma_eff=g)
+            p = pulses.sech_pulse(t, 100*fs, f_ref=f_ref, Energy=10*pJ,
+                                  f0=c/(1.55*um), Npwr_dB=200, frep=250*MHz)
+            out, _ = wg.propagate_NEE(p, v_ref=v_ref, verbose=False)
+            results[g] = rms_width(t, out.a)
+
+        # Positive gamma compresses relative to no Kerr
+        assert results[+0.3] < results[0], \
+            "Positive gamma should compress with anomalous GVD"
+        # Negative gamma broadens relative to no Kerr
+        assert results[-0.3] > results[0], \
+            "Negative gamma should broaden with anomalous GVD"

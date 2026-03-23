@@ -228,9 +228,10 @@ class waveguide:
         '''
         self.poling = poling
         
-    def set_nonlinear_coeffs(self, N, X0):
+    def set_nonlinear_coeffs(self, N, X0, gamma_eff=0):
         self.N = N
         self.X0 = X0
+        self.gamma_eff = gamma_eff
         
     def nonlinear_coupling(self, z):
         return self.poling(z) * self.X0 / (4*self.N)
@@ -298,7 +299,8 @@ class waveguide:
                         z0 = z0,
                         verbose = verbose,
                         Kg = Kg,
-                        Qnoise = Qnoise)
+                        Qnoise = Qnoise,
+                        gamma_eff = getattr(self, 'gamma_eff', 0))
 
         if backend == 'jax':
             from . import nlo_jax

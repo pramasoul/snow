@@ -174,6 +174,11 @@ wg.set_loss(alpha)              # absorption coefficient in 1/m
 - `X0`: nonlinear coupling coefficient (see dedicated section below)
 - `alpha`: power absorption coefficient in 1/m.  Convert from dB/cm
   using `util.absorption_coeff(Alpha_dBcm)`.
+- `gamma_eff`: effective Kerr nonlinearity parameter (1/W/m).  Pass as
+  the third argument to `set_nonlinear_coeffs(N, X0, gamma_eff)`.
+  Adds instantaneous SPM: the Kerr term `−i·γ·|A|²·A` in SNOW's
+  dispersion convention (positive γ = self-focusing).  Default 0.
+  Typical TFLN values: 100–400 /W/km = 0.1–0.4 /W/m.
 
 ### Running a simulation
 
