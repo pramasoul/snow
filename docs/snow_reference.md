@@ -193,8 +193,17 @@ out_pulse, steps = wg.propagate_NEE(input_pulse, v_ref=v_ref,
 - `backend`: `'scipy'` uses the original SciPy RK45 solver (CPU).
   `'jax'` uses the JAX JIT-compiled GPU solver.
 
+- `z_save`: optional sorted array of z-positions (meters) at which to
+  record the time-domain field during propagation.  When provided, the
+  second return value is a 2-D complex array of shape
+  `(len(z_save), NFFT)` containing field snapshots instead of the
+  step-size array.  Uses the RK45 dense output for accurate
+  interpolation at arbitrary z.  Currently supported only with
+  `backend='scipy'`.
+
 - Returns: `(output_pulse, step_list)` where step_list contains the
-  adaptive step sizes used by the RK45 solver.
+  adaptive step sizes used by the RK45 solver.  If `z_save` is
+  provided, step_list is replaced by the snapshots array.
 
 ---
 
@@ -391,6 +400,25 @@ for rt in range(n_roundtrips):
     sig_out = out.apply_filter(f0_signal, signal_bw)
     recycled = sig_out.a * np.sqrt(feedback_frac)
 ```
+
+### z-resolved field evolution
+
+To record the field at intermediate propagation points (e.g. for
+(z, t) color maps of soliton dynamics), pass `z_save`:
+
+```python
+z_positions = np.linspace(0.5*mm, L, 100)
+out, snapshots = wg.propagate_NEE(pulse, v_ref=v_ref, z_save=z_positions)
+
+# snapshots is complex, shape (100, NFFT) — time-domain field at each z
+plt.pcolormesh(t/fs, z_positions/mm, np.abs(snapshots)**2)
+plt.xlabel('Time (fs)'); plt.ylabel('z (mm)')
+```
+
+Each snapshot is the time-domain field `a(z, t)` where `|a|² = Watts`.
+The SciPy backend uses RK45 dense output for accurate interpolation
+at arbitrary z.  The JAX backend clamps steps to land exactly on
+`z_save` positions.  Both backends are supported.
 
 ### Bulk crystal OPA (Tutorial 8 pattern)
 

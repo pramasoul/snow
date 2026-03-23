@@ -2,6 +2,7 @@
 """
 @author: Luis Ledezma
 """
+import warnings
 import numpy as np
 from numpy.fft import fft, ifft, fftfreq
 from scipy.constants import pi, h
@@ -9,11 +10,20 @@ from scipy.constants import pi, h
 from scipy.integrate import RK45
 
 def NEE(t, x, Omega, f0,
-        L, D, b0, b1_ref, k, 
-        z0=0, verbose=True, Kg=0, Qnoise=False):
+        L, D, b0, b1_ref, k,
+        z0=0, verbose=True, Kg=0, Qnoise=False,
+        z_save=None):
     """
-    Nonlinear-envelope equation 
+    Nonlinear-envelope equation
     Adaptive solver
+
+    Parameters
+    ----------
+    z_save : array-like, optional
+        Sorted z-positions at which to record the time-domain field.
+        When provided, the returned ``a_evol`` is a 2-D array of shape
+        ``(len(z_save), NFFT)`` containing the field snapshots instead
+        of the step-size array.
     """
     #Get stuff
     NFFT = t.size
@@ -31,8 +41,7 @@ def NEE(t, x, Omega, f0,
     Nup = 4
     if (3*f_max - f_min)/BW > Nup:
         Nup = 8
-        print('Warning: large upsampling necessary!')
-        print('Using %ix upsampling.' %(Nup))
+        warnings.warn('Large bandwidth requires 8x upsampling.', stacklevel=2)
 
     #Quantum noise
     if Qnoise:
@@ -85,18 +94,34 @@ def NEE(t, x, Omega, f0,
     atol = 1e-4
     
     Integrator = RK45( fnl, z0, A, L, rtol=rtol, atol=atol )
-    
+
+    # z-resolved field snapshots
+    if z_save is not None:
+        z_save = np.asarray(z_save, dtype=float)
+        snapshots = np.zeros((len(z_save), NFFT), dtype=complex)
+        snap_idx = 0
+
     steps = np.array([])
     while Integrator.status == "running":
         Integrator.step()
         steps = np.append( steps, Integrator.step_size )
 
-    if verbose:    
+        # Record snapshots at requested z positions
+        if z_save is not None:
+            while snap_idx < len(z_save) and Integrator.t >= z_save[snap_idx]:
+                y_snap = Integrator.dense_output()(z_save[snap_idx])
+                snapshots[snap_idx] = ifft(y_snap * np.exp(-1j*D*z_save[snap_idx]))
+                snap_idx += 1
+
+    if verbose:
         print( Integrator.status )
-    
+
     A[:] = Integrator.y * np.exp(-1j*D*Integrator.t)
     a = ifft(A)
-    
+
+    if z_save is not None:
+        return a, snapshots
+
     return a, steps
 
 

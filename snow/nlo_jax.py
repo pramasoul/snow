@@ -142,7 +142,8 @@ def NEE(t, x, Omega, f0,
         z0=0, verbose=True, Kg=0, Qnoise=False,
         gpu=None, poling_samples=None, poling_table=None,
         poling_fn_jax=None,
-        rtol=1e-4, atol=1e-4):
+        rtol=1e-4, atol=1e-4,
+        z_save=None):
     """
     Nonlinear-envelope equation -- JAX JIT-compiled adaptive RK45 solver.
 
@@ -165,6 +166,12 @@ def NEE(t, x, Omega, f0,
         Relative tolerance for the adaptive step controller (default 1e-4).
     atol : float
         Absolute tolerance for the adaptive step controller (default 1e-4).
+    z_save : array-like, optional
+        Sorted z-positions at which to record the time-domain field.
+        When provided, the returned ``a_evol`` is a 2-D array of shape
+        ``(len(z_save), NFFT)`` containing the field snapshots instead
+        of the step-size array.  Steps are clamped to land exactly on
+        ``z_save`` positions for accuracy.
 
     All other parameters match nlo.NEE for drop-in use.
     """
@@ -239,10 +246,18 @@ def NEE(t, x, Omega, f0,
             idx = jnp.clip(idx, 0, z_table.shape[0] - 1)
             return g_table[idx] * k_shape
 
+    # --- Snapshot setup ---
+    do_snapshots = z_save is not None
+    if do_snapshots:
+        z_save = np.asarray(z_save, dtype=np.float64)
+        n_snaps = len(z_save)
+        z_save_dev = jnp.asarray(z_save)
+        snap_buf_init = jnp.zeros((n_snaps, NFFT), dtype=jnp.complex128)
+
     # JIT-compiled solver — faithful port of scipy.integrate.RK45
     @jax.jit
     def _solve(A0, k_shape, z_table, g_table, L_val, z0_val,
-               rtol_val, atol_val):
+               rtol_val, atol_val, *snapshot_args):
 
         def k_at_z(z):
             return _k_at_z(z, k_shape, z_table, g_table)
@@ -326,19 +341,35 @@ def NEE(t, x, Omega, f0,
 
         h_init = jnp.minimum(jnp.minimum(100 * h0, h1), L_val - z0_val)
 
-        # State: (z, y, h, f_current, n_steps, step_rejected)
-        init_state = (jnp.float64(z0_val), A0, jnp.float64(h_init),
-                      f0_init, jnp.int32(0), jnp.bool_(False))
+        if do_snapshots:
+            z_sv, snap_buf = snapshot_args
+            init_state = (jnp.float64(z0_val), A0, jnp.float64(h_init),
+                          f0_init, jnp.int32(0), jnp.bool_(False),
+                          snap_buf, jnp.int32(0))
+        else:
+            init_state = (jnp.float64(z0_val), A0, jnp.float64(h_init),
+                          f0_init, jnp.int32(0), jnp.bool_(False))
 
         def cond_fn(state):
-            z, _, _, _, _, _ = state
+            z = state[0]
             return z < L_val
 
         def body_fn(state):
-            z, y, h_abs, f_cur, n, was_rejected = state
+            if do_snapshots:
+                z, y, h_abs, f_cur, n, was_rejected, snaps, si = state
+            else:
+                z, y, h_abs, f_cur, n, was_rejected = state
 
             # Clamp step to remaining distance
             h = jnp.minimum(h_abs, L_val - z)
+
+            if do_snapshots:
+                # Also clamp to the next z_save point so we land exactly on it
+                safe_si = jnp.minimum(si, n_snaps - 1)
+                next_save = z_sv[safe_si]
+                h = jnp.where(si < n_snaps,
+                              jnp.minimum(h, next_save - z),
+                              h)
 
             # RK step with FSAL
             y_new, f_new, error_norm = rk_step(z, y, f_cur, h)
@@ -373,16 +404,33 @@ def NEE(t, x, Omega, f0,
             n_next = jnp.where(accepted, n + 1, n)
             rejected_next = ~accepted
 
-            return (z_next, y_next, h_new, f_next, n_next, rejected_next)
+            if do_snapshots:
+                # Record snapshot if we've landed on a z_save point
+                at_save = accepted & (si < n_snaps) & (z_next >= z_sv[safe_si])
+                field = jnp.fft.ifft(y_next * jnp.exp(-1j * D_dev * z_next))
+                new_snaps = snaps.at[safe_si].set(field)
+                snaps_next = jnp.where(at_save, new_snaps, snaps)
+                si_next = jnp.where(at_save, si + 1, si)
+                return (z_next, y_next, h_new, f_next, n_next, rejected_next,
+                        snaps_next, si_next)
+            else:
+                return (z_next, y_next, h_new, f_next, n_next, rejected_next)
 
-        z_final, y_final, h_final, f_final, n_steps, _ = \
-            jax.lax.while_loop(cond_fn, body_fn, init_state)
+        final_state = jax.lax.while_loop(cond_fn, body_fn, init_state)
+
+        if do_snapshots:
+            z_final, y_final, _, _, n_steps, _, snaps_final, _ = final_state
+        else:
+            z_final, y_final, _, _, n_steps, _ = final_state
 
         # Final transform
         A_out = y_final * jnp.exp(-1j * D_dev * L_val)
         a_out = jnp.fft.ifft(A_out)
 
-        return a_out, n_steps
+        if do_snapshots:
+            return a_out, n_steps, snaps_final
+        else:
+            return a_out, n_steps
 
     # Run
     if verbose:
@@ -392,17 +440,26 @@ def NEE(t, x, Omega, f0,
     z0_val = jnp.float64(z0)
     rtol_val = jnp.float64(rtol)
     atol_val = jnp.float64(atol)
-    a_out, n_steps = _solve(A0, k_shape, z_table, g_table,
-                            L_val, z0_val, rtol_val, atol_val)
 
-    # Block and move to CPU
-    a_out = np.asarray(a_out)
-    n_steps = int(n_steps)
-
-    if verbose:
-        print(f'finished ({n_steps} steps)')
-
-    return a_out, [float(L) / max(n_steps, 1)] * n_steps
+    if do_snapshots:
+        result = _solve(A0, k_shape, z_table, g_table,
+                        L_val, z0_val, rtol_val, atol_val,
+                        z_save_dev, snap_buf_init)
+        a_out, n_steps, snaps = result
+        a_out = np.asarray(a_out)
+        snaps = np.asarray(snaps)
+        n_steps = int(n_steps)
+        if verbose:
+            print(f'finished ({n_steps} steps)')
+        return a_out, snaps
+    else:
+        a_out, n_steps = _solve(A0, k_shape, z_table, g_table,
+                                L_val, z0_val, rtol_val, atol_val)
+        a_out = np.asarray(a_out)
+        n_steps = int(n_steps)
+        if verbose:
+            print(f'finished ({n_steps} steps)')
+        return a_out, [float(L) / max(n_steps, 1)] * n_steps
 
 
 if __name__ == '__main__':

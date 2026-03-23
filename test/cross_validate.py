@@ -226,6 +226,92 @@ def run_ladder(nlo_ref, nlo_jax, logger=None):
     return all(s == 'PASS' for _, _, s in results)
 
 
+def compare_z_save(label, pump, args, nlo_ref, nlo_jax, z_save,
+                   threshold=0.99, logger=None, params=None):
+    """Run both solvers with z_save and compare snapshots."""
+    z_save = np.asarray(z_save)
+
+    a_ref, snaps_ref = nlo_ref.NEE(**args, z_save=z_save)
+    a_jax, snaps_jax = nlo_jax.NEE(**args, z_save=z_save)
+
+    # Final field correlation
+    corr_final = field_correlation(a_ref, a_jax)
+
+    # Per-snapshot correlation
+    corr_snaps = []
+    for i in range(len(z_save)):
+        c = field_correlation(snaps_ref[i], snaps_jax[i])
+        corr_snaps.append(c)
+    worst_snap = min(corr_snaps)
+
+    status = 'PASS' if worst_snap > threshold else 'WARN' if worst_snap > 0.99 else 'FAIL'
+    print(f'  {label}')
+    print(f'    [{status}] final_corr={corr_final:.6f}  '
+          f'worst_snap_corr={worst_snap:.6f}  '
+          f'snaps_shape={snaps_ref.shape}')
+
+    if logger is not None:
+        record = {
+            'event': 'z_save_comparison',
+            'label': label,
+            'status': status,
+            'corr_final': corr_final,
+            'corr_snapshots': [round(c, 6) for c in corr_snaps],
+            'worst_snap_corr': worst_snap,
+            'n_snapshots': len(z_save),
+        }
+        if params is not None:
+            record['params'] = params
+        logger.write_record(record)
+
+    return worst_snap, status
+
+
+def run_z_save_ladder(nlo_ref, nlo_jax, logger=None):
+    """Cross-validate z_save snapshots between backends."""
+    t, f_ref = make_grid()
+    results = []
+
+    cases = [
+        ('z_save: linear, 4mm, 8 snapshots',
+         dict(L=4*mm, X0=0),
+         np.linspace(0.5*mm, 4*mm, 8)),
+        ('z_save: SHG, 4mm, 8 snapshots',
+         dict(L=4*mm, X0=1.1e-12),
+         np.linspace(0.5*mm, 4*mm, 8)),
+        ('z_save: SHG + loss, 4mm, 5 snapshots',
+         dict(L=4*mm, X0=1.1e-12, alpha=util.absorption_coeff(0.5)),
+         np.linspace(1*mm, 4*mm, 5)),
+        ('z_save: SHG, 4mm, single snapshot at L',
+         dict(L=4*mm, X0=1.1e-12),
+         np.array([4*mm])),
+        ('z_save: SHG, 4mm, dense (20 snapshots)',
+         dict(L=4*mm, X0=1.1e-12),
+         np.linspace(0.2*mm, 4*mm, 20)),
+    ]
+
+    print('\n=== z_save Cross-Validation ===')
+    for label, kwargs, z_pos in cases:
+        params = {'mode': 'z_save_ladder', 'n_snapshots': len(z_pos)}
+        pump, args = make_nee_args(t, f_ref, **kwargs)
+        corr, status = compare_z_save(label, pump, args, nlo_ref, nlo_jax,
+                                      z_pos, logger=logger, params=params)
+        results.append((label, corr, status))
+
+    n_pass = sum(1 for _, _, s in results if s != 'FAIL')
+    n_total = len(results)
+    print(f'\n  {n_pass}/{n_total} passed')
+
+    if logger:
+        logger.write_record({
+            'event': 'z_save_ladder_summary',
+            'n_pass': n_pass,
+            'n_total': n_total,
+        })
+
+    return all(s != 'FAIL' for _, _, s in results)
+
+
 def run_soak(nlo_ref, nlo_jax, n_iterations=None, logger=None):
     """Run-until-stopped random parameter fuzzing.
 
@@ -385,6 +471,7 @@ def main():
             ok = run_soak(nlo_ref, nlo_jax, n_iterations=args.n, logger=logger)
         else:
             ok = run_ladder(nlo_ref, nlo_jax, logger=logger)
+            ok = run_z_save_ladder(nlo_ref, nlo_jax, logger=logger) and ok
     finally:
         if logger:
             logger.close()

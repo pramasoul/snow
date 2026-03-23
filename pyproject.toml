@@ -11,8 +11,15 @@ requires-python = ">= 3.8"
 dependencies = [
     "numpy >= 2.2",
     "matplotlib >= 3.10",
-    "scipy >= 1.15"
+    "scipy >= 1.15",
+    "colorcet",
     ]
+
+[project.optional-dependencies]
+notebook = ["jupyterlab", "ipympl"]
+gpu = ["jax[cuda12]"]
+dev = ["pytest", "jupyterlab"]
+all = ["snow[notebook,gpu,dev]"]
 
 [tool.setuptools.packages.find]
 include = ["snow*"]

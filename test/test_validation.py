@@ -398,3 +398,101 @@ class TestUtil:
         """Richardson extrapolation on sin(x) should give cos(x)."""
         d = util.derivative(np.sin, 1.0, 3, 0.01)
         assert d == pytest.approx(np.cos(1.0), rel=1e-8)
+
+
+# ===========================================================================
+# Group 8: z_save — field snapshots during propagation
+# ===========================================================================
+
+class TestZSave:
+    """Validate z_save field recording on the SciPy backend."""
+
+    @pytest.fixture
+    def setup(self):
+        t, f_ref = make_grid()
+        wg = make_waveguide(alpha_dBcm=0.0, X0=1.1e-12, L=4*mm)
+        pulse = pulses.sech_pulse(t, 100*fs, f_ref=f_ref, Energy=1*pJ,
+                                  f0=c/(2*um), Npwr_dB=200, frep=250*MHz)
+        v_ref = 1 / wg.beta1(1*um)
+        return wg, pulse, v_ref
+
+    def test_snapshot_shape(self, setup):
+        """z_save returns array of shape (n_saves, NFFT)."""
+        wg, pulse, v_ref = setup
+        z_pos = np.linspace(1*mm, 4*mm, 5)
+        out, snaps = wg.propagate_NEE(pulse, v_ref=v_ref, verbose=False,
+                                      z_save=z_pos)
+        assert snaps.shape == (5, pulse.NFFT)
+        assert snaps.dtype == np.complex128
+
+    def test_last_snapshot_matches_output(self, setup):
+        """Snapshot at z=L must match the final output field."""
+        wg, pulse, v_ref = setup
+        L = 4 * mm
+        z_pos = np.array([L])
+        out, snaps = wg.propagate_NEE(pulse, v_ref=v_ref, verbose=False,
+                                      z_save=z_pos)
+        np.testing.assert_allclose(snaps[0], out.a, atol=1e-12)
+
+    def test_without_z_save_returns_steps(self, setup):
+        """Without z_save, second return value is the step-size array."""
+        wg, pulse, v_ref = setup
+        out, steps = wg.propagate_NEE(pulse, v_ref=v_ref, verbose=False)
+        assert isinstance(steps, np.ndarray)
+        assert steps.ndim == 1
+        assert len(steps) > 10  # should take many steps
+
+    def test_snapshot_energy_conservation(self, setup):
+        """Each snapshot should conserve energy (lossless case)."""
+        wg, pulse, v_ref = setup
+        E_in = pulse.energy_td()
+        z_pos = np.linspace(0.5*mm, 4*mm, 8)
+        out, snaps = wg.propagate_NEE(pulse, v_ref=v_ref, verbose=False,
+                                      z_save=z_pos)
+        dt = pulse.t[1] - pulse.t[0]
+        for i, z in enumerate(z_pos):
+            E_snap = np.sum(np.abs(snaps[i])**2) * dt
+            assert E_snap == pytest.approx(E_in, rel=5e-3), \
+                f"Energy not conserved at z={z/mm:.1f} mm"
+
+    def test_snapshots_are_nonzero(self, setup):
+        """Snapshots must contain actual field data, not zeros."""
+        wg, pulse, v_ref = setup
+        z_pos = np.linspace(0.5*mm, 4*mm, 4)
+        out, snaps = wg.propagate_NEE(pulse, v_ref=v_ref, verbose=False,
+                                      z_save=z_pos)
+        for i in range(len(z_pos)):
+            assert np.max(np.abs(snaps[i])) > 0
+
+    def test_linear_snapshot_dispersion_only(self):
+        """In linear propagation, snapshots should show progressive broadening."""
+        t, f_ref = make_grid(lam_start=800*nm, lam_stop=1.5*um, N=2**12)
+        wg = make_waveguide(alpha_dBcm=0.0, X0=0.0, L=20*mm)
+        pulse = pulses.gaussian_pulse(t, 100*fs, f_ref=f_ref, Energy=1*pJ,
+                                      f0=c/(1*um), Npwr_dB=200, frep=250*MHz)
+        v_ref = 1 / wg.beta1(1*um)
+        z_pos = np.array([5*mm, 10*mm, 20*mm])
+        out, snaps = wg.propagate_NEE(pulse, v_ref=v_ref, verbose=False,
+                                      z_save=z_pos)
+        # RMS widths should increase monotonically
+        widths = [rms_width(t, snaps[i]) for i in range(3)]
+        assert widths[1] > widths[0], "Pulse should broaden with z"
+        assert widths[2] > widths[1], "Pulse should broaden with z"
+
+    def test_z_save_does_not_change_final_field(self):
+        """Enabling z_save must not alter the physics of the final output."""
+        t, f_ref = make_grid()
+        # Use identical pulse (no noise) for fair comparison
+        x = pulses.sech(t, 1*pJ, 100*fs, f0=c/(2*um) - f_ref)
+        wg = make_waveguide(alpha_dBcm=0.0, X0=1.1e-12, L=4*mm)
+        v_ref = 1 / wg.beta1(1*um)
+
+        p1 = pulses.pulse(t, x.copy(), c/f_ref, frep=250*MHz)
+        out1, _ = wg.propagate_NEE(p1, v_ref=v_ref, verbose=False)
+
+        p2 = pulses.pulse(t, x.copy(), c/f_ref, frep=250*MHz)
+        z_pos = np.linspace(1*mm, 4*mm, 10)
+        out2, snaps = wg.propagate_NEE(p2, v_ref=v_ref, verbose=False,
+                                       z_save=z_pos)
+
+        np.testing.assert_allclose(out1.a, out2.a, rtol=1e-10)

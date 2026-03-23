@@ -219,12 +219,18 @@ python test/cross_validate.py --soak -n 100 --reference /path/to/nlo_original.py
 
 ### Known limitations
 
-At high pump powers (>~50 μW average, corresponding to significant pump
-depletion), the two adaptive solvers can diverge because the problem becomes
-sensitive to the exact step sequence.  Both solvers remain individually valid
-(conserve energy, produce physical spectra), but their field correlation
-drops below 0.99.  This is inherent to adaptive ODE solvers on sensitive
-problems, not a bug in either implementation.
+- At high pump powers (>~50 μW average, corresponding to significant pump
+  depletion), the two adaptive solvers can diverge because the problem becomes
+  sensitive to the exact step sequence.  Both solvers remain individually valid
+  (conserve energy, produce physical spectra), but their field correlation
+  drops below 0.99.  This is inherent to adaptive ODE solvers on sensitive
+  problems, not a bug in either implementation.
+
+- The `z_save` parameter is supported on both backends.  The SciPy
+  backend uses RK45 dense output for interpolation at arbitrary z.
+  The JAX backend clamps steps to land exactly on `z_save` positions,
+  which may add a small number of extra steps but gives exact z
+  placement with no interpolation error.
 
 ## Performance
 

@@ -240,7 +240,8 @@ class waveguide:
                          z0 = 0, T=24.5, Kg=0, Qnoise=False,
                          backend='scipy', poling_table=None,
                          poling_fn_jax=None,
-                         rtol=1e-4, atol=1e-4):
+                         rtol=1e-4, atol=1e-4,
+                         z_save=None):
         """Propagate a pulse through the waveguide using the NEE.
 
         Parameters
@@ -252,6 +253,11 @@ class waveguide:
             Pre-built poling table from nlo_jax.build_poling_table().
             For parameter sweeps with backend='jax', build once for
             the maximum L and pass to each call.
+        z_save : array-like, optional
+            Sorted z-positions at which to record the time-domain field.
+            When provided, the second return value is a 2-D array of
+            shape ``(len(z_save), NFFT)`` instead of step sizes.
+            Supported by both backends.
         """
         #Timer
         tic_total = time.time()
@@ -298,9 +304,10 @@ class waveguide:
             from . import nlo_jax
             [a, a_evol] = nlo_jax.NEE(**nee_args, poling_table=poling_table,
                                       poling_fn_jax=poling_fn_jax,
-                                      rtol=rtol, atol=atol)
+                                      rtol=rtol, atol=atol,
+                                      z_save=z_save)
         else:  # 'scipy'
-            [a, a_evol] = nlo.NEE(**nee_args)
+            [a, a_evol] = nlo.NEE(**nee_args, z_save=z_save)
         
         tdelta = time.time() - tic_total
 
