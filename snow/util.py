@@ -20,6 +20,45 @@ def absorption_coeff(Alpha):
     alpha = np.log((10**(Alpha * 0.1))) * 100
     return alpha
 
+def fwhm_interp(t, x):
+    """Interpolated FWHM of |x|² using linear interpolation at half-max crossings.
+
+    Returns the full width at half maximum in the same units as t.
+    Uses linear interpolation between grid points to achieve sub-dt
+    resolution, avoiding the staircase quantization of bin-counting.
+
+    Returns np.nan if the pulse has no clear peak above the noise floor.
+    """
+    I = np.abs(x)**2
+    peak = np.max(I)
+    if peak <= 0:
+        return np.nan
+    half = peak / 2
+    above = I >= half
+    if np.sum(above) < 2:
+        return np.nan
+
+    # Find first and last crossings by linear interpolation
+    idxs = np.where(above)[0]
+    i_lo, i_hi = idxs[0], idxs[-1]
+
+    # Interpolate left crossing (between i_lo-1 and i_lo)
+    if i_lo > 0 and I[i_lo - 1] < half:
+        frac = (half - I[i_lo - 1]) / (I[i_lo] - I[i_lo - 1])
+        t_left = t[i_lo - 1] + frac * (t[i_lo] - t[i_lo - 1])
+    else:
+        t_left = t[i_lo]
+
+    # Interpolate right crossing (between i_hi and i_hi+1)
+    if i_hi < len(I) - 1 and I[i_hi + 1] < half:
+        frac = (half - I[i_hi + 1]) / (I[i_hi] - I[i_hi + 1])
+        t_right = t[i_hi + 1] - frac * (t[i_hi + 1] - t[i_hi])
+    else:
+        t_right = t[i_hi]
+
+    return t_right - t_left
+
+
 def derivative( f, x, n, h ):
     """Richardson's Extrapolation to approximate  f'(x) at a particular x.
 

@@ -399,6 +399,25 @@ class TestUtil:
         d = util.derivative(np.sin, 1.0, 3, 0.01)
         assert d == pytest.approx(np.cos(1.0), rel=1e-8)
 
+    def test_fwhm_interp_sech(self):
+        """Interpolated FWHM of a sech pulse should match the known value."""
+        dt = 3*fs
+        t = np.arange(4096)*dt - 4096*dt/2
+        FWHM_true = 50 * fs
+        x = 1.0 / np.cosh(1.76 * t / FWHM_true)
+        fw = util.fwhm_interp(t, x)
+        assert fw == pytest.approx(FWHM_true, rel=1e-2)
+
+    def test_fwhm_interp_gaussian(self):
+        """Interpolated FWHM of a Gaussian should match the known value."""
+        dt = 3*fs
+        t = np.arange(4096)*dt - 4096*dt/2
+        FWHM_true = 80 * fs
+        sigma = FWHM_true / (2*np.sqrt(2*np.log(2)))
+        x = np.exp(-t**2 / (2*sigma**2))
+        fw = util.fwhm_interp(t, x)
+        assert fw == pytest.approx(FWHM_true, rel=1e-2)
+
 
 # ===========================================================================
 # Group 8: z_save — field snapshots during propagation
